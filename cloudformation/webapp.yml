@@ -1,0 +1,106 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to create chef-solo instance
+   
+Parameters:
+  ImageId:
+    Type: String
+    Description: 'Linux 2 AMI for us-east-1 Region'
+    Default: 'ami-0cff7528ff583bf9a'
+  VpcId:
+    Type: String
+    Description: VPC id
+    Default: vpc-09aa701fe014210d8
+  SubnetId:
+    Type: String
+    Description: Subnet in which to launch an EC2
+    Default: subnet-0cffe1fa87b58e953
+  AvailabilityZone:
+    Type: String
+    Description: Availability Zone into which instance will launch
+    Default: us-east-1b
+  InstanceType:
+    Type: String
+    Description: Choosing t2 micro
+    Default: t2.micro
+  KeyName:
+    Description: SSH Keypair to login to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: cog-key
+  SshCidrRange:
+    Type: String
+    #Default: "111.111.111.111/32"
+  ChefPem:
+    Type: 'AWS::SSM::Parameter::Value<String>'
+    Default: ChefPemWebapp
+
+Resources:
+  SoloInstance:
+    Type: 'AWS::EC2::Instance'
+    Properties: 
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      AvailabilityZone: !Ref AvailabilityZone
+      KeyName: !Ref KeyName
+      SecurityGroupIds: 
+        - !Ref SoloSecurityGroup
+      SubnetId: !Ref SubnetId
+      UserData:
+        Fn::Base64: 
+          !Sub |
+            #!/bin/bash -xev            
+            # Do some chef pre-work
+            /bin/mkdir -p /etc/chef
+            /bin/mkdir -p /var/lib/chef
+            /bin/mkdir -p /var/log/chef            
+            cd /etc/chef/            
+            # Install chef
+            curl -L https://omnitruck.chef.io/install.sh | bash || error_exit 'could not install chef'            
+            # Create first-boot.json
+            cat > "/etc/chef/first-boot.json" << EOF
+            {
+               "run_list" :[
+               "recipe[webapp]"
+               ]
+            }
+            EOF            
+            #NODE_NAME=node-$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 4 | head -n 1)            
+            # Create pem file
+            echo "${ChefPem}" > /etc/chef/chef_sandbox_user.pem
+            chmod 400 /etc/chef/chef_sandbox_user.pem
+            
+            # Create client.rb
+            cat > '/etc/chef/client.rb' << EOF
+            log_location            STDOUT
+            chef_server_url         'https://api.chef.io/organizations/org3_webapp'
+            validation_client_name  'chef_sandbox_user'
+            validation_key          '/etc/chef/chef_sandbox_user.pem'
+            node_name               'webappserver'
+            EOF
+            
+            chef-client --chef-license accept -j /etc/chef/first-boot.json
+
+  SoloSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: SG to allow SSH access via port 22
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref SshCidrRange
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Name
+          Value: chef-ssh
+Outputs:
+  SoloInstanceId:
+    Description: Instance Id 
+    Value: !Ref SoloInstance
